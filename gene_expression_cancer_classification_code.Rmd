@@ -1,0 +1,907 @@
+---
+title: "Gene Expresseion Cancer Classification"
+output: html_document
+date: "2024-03-14"
+---
+
+### Gene Expresseion Cancer Classification
+
+#### [Loading Necessary Libraries:]{style="color:navy; font-weight:bold;"}
+
+```{r}
+library(zoo)
+library(caret)
+library(stats)
+library(ggplot2)
+library(reshape2)
+library(randomForest)   # For Random Forest evaluation
+library(rpart)          # For Decision Tree
+library(MASS)           # For LDA & generalized analysis
+library(car)
+library(e1071)          # For Naive Bayes
+library(class)          # For k-NN
+library(glmnet)         # For Logistic Regression
+library(tidymodels)     # For modeling and evaluation
+library(pROC)           # For ROC curve analysis
+library(xgboost)        # For XGBoost analysis
+library(kernlab)
+library(pROC)
+library(Rtsne)
+library(ggplot2)
+```
+
+#### [Data Exploration and Analysis:]{style="color:navy; font-weight:bold;"}
+
+**Loading and Understanding the Raw Dataset:**
+
+```{r}
+# Setting up the working directory:
+setwd("C://Users//Maisam//Downloads//4. Assignments//MA 321-7  ; Applied Statistics ; Team Project")
+getwd()
+
+# Loading the raw dataset
+initial_data <- read.csv(file="gene-expression-invasive-vs-noninvasive-cancer.csv")
+
+# Understanding the structure of raw dataset
+str(initial_data[,1:10])
+
+# Verifying the class label column name
+dimnames(initial_data)[[2]][4947:4949]
+
+# Tabulating the frequencies of class label column
+table(initial_data[4949])
+```
+
+**Removing Nulls, NA Values and Detecting Outliers:**
+
+```{r}
+# Check for missing values
+na_count <- sum(is.na(initial_data))
+na_count
+
+# Check for infinite values
+inf_count <- sum(sapply(initial_data, function(x) sum(is.infinite(x))))
+inf_count
+
+# Handling missing values
+# install.packages('zoo')
+library(zoo)
+
+# replace missing values with mean
+processed_data <- na.aggregate(initial_data, FUN = mean)
+na_count <- sum(is.na(processed_data))
+na_count
+```
+
+```{r}
+# Identify outliers
+# Example: Z-score method for identifying outliers in the first gene column
+z_scores <- scale(processed_data[,1])
+outliers <- which(abs(z_scores) > 3)
+
+# Visualize outliers (for the first gene as an example)
+boxplot(processed_data[,1:3], main="Boxplot for Genes")
+
+```
+
+**Statistical Measures & Analysis:**
+
+```{r}
+# Exclude the column with labels for invasive vs. noninvasive cancer if present
+genes_data <- processed_data[, !names(processed_data) %in% c('class')]
+
+# Calculate statistical measures
+mean_values <- apply(genes_data, 2, mean)
+
+median_values <- apply(genes_data, 2, median)
+
+std_dev_values <- apply(genes_data, 2, sd)
+
+variance_values <- apply(genes_data, 2, var)
+
+range_values <- apply(genes_data, 2, function(x) max(x) - min(x))
+
+statistical_measures <- data.frame(
+  Mean = mean_values,
+  Median = median_values,
+  StandardDeviation = std_dev_values,
+  Variance = variance_values,
+  Range = range_values
+)
+
+# Display the statistical measures for the first gene column
+# Assuming the first gene corresponds to the first column in the original data
+first_gene_measures <- statistical_measures[1:5,]
+print(first_gene_measures)
+
+# Distribution of gene expression levels - Histogram for a single gene as an example
+hist(genes_data[,1], breaks = 30, main = "Histogram of Gene Expression Levels", xlab = "Expression Level", ylab = "Frequency")
+
+# Assessing normality - Q-Q plot for the same gene as an example
+qqnorm(genes_data[,1], main = "Q-Q Plot for Gene Expression Levels")
+qqline(genes_data[,1], col = "red")
+```
+
+```{r}
+# Assuming 'genes_data' is your cleaned and preprocessed dataset, excluding the label column
+
+# Calculate variance for each gene
+gene_variances <- apply(genes_data, 2, var)
+
+# You can set a threshold for variance to filter genes
+# For example, selecting genes with variance in the top 25%
+variance_threshold <- quantile(gene_variances, 0.75)
+high_variance_genes <- names(gene_variances[gene_variances > variance_threshold])
+
+# Calculate the Coefficient of Variation (CV) for each gene
+gene_means <- apply(genes_data, 2, mean)
+gene_sd <- apply(genes_data, 2, sd)
+gene_cv <- gene_sd / gene_means
+
+# Optionally, filter genes based on CV
+# For example, selecting genes with CV in the top 25%
+cv_threshold <- quantile(gene_cv, 0.75)
+high_cv_genes <- names(gene_cv[gene_cv > cv_threshold])
+
+# Summary of results
+cat("Number of genes with high variance:", length(high_variance_genes), "\n")
+cat("Number of genes with high CV:", length(high_cv_genes), "\n")
+
+```
+
+**Generating a Random Subset:**
+
+```{r}
+# Setting up random seed for reproducibility
+registration_number <- 2315740 #Mantosh
+set.seed(registration_number)
+
+# Generating random subset of 2000 features
+subset_indices <- sample(1:(ncol(initial_data) - 1), 2000)
+subset_indices[1:20]
+
+subset_df <- initial_data[ , subset_indices]
+
+# Validating and understanding the random subset
+dim(subset_df)
+```
+
+**Preprocessing the Randomly Generated Subset:**
+
+```{r}
+# Checking null values
+na_count <- sum(is.na(subset_df))
+na_count
+
+# Replacing null values with column means
+subset_df <- na.aggregate(subset_df, FUN = mean)
+
+# Validating null values
+na_count <- sum(is.na(subset_df))
+na_count
+
+# Checking for infinte values / error values
+inf_count <- sum(sapply(subset_df, function(x) sum(is.infinite(x))))
+inf_count
+```
+
+**Understanding Correlation Between Variables:** 
+
+```{r}
+# Craeting a correlation matrix
+correlation <- cor(subset_df)
+
+# Creating highly correlated pairs
+highly_correlated_pairs <- which(correlation > 0.7 & correlation < 1, arr.ind = TRUE)
+
+# Removing one feature for each pair
+features_to_remove <- character(0)
+for (i in 1:nrow(highly_correlated_pairs)) {
+  feature1 <- colnames(subset_df)[highly_correlated_pairs[i, 1]]
+  feature2 <- colnames(subset_df)[highly_correlated_pairs[i, 2]]
+  if (!(feature1 %in% features_to_remove)) {
+    features_to_remove <- c(features_to_remove, feature2)
+  }
+}
+
+# Creating a filtered df with removed features
+filtered_df <- subset_df[, !colnames(subset_df) %in% features_to_remove]
+dim(filtered_df)
+```
+
+#### [PART 1: Dimensionality Reduction:]{style="color:navy; font-weight:bold;"}
+
+**I) Consider unsupervised and supervised dimension reduction of the 2000 observed gene expression values in your data set.**  
+
+**Applying Principal Component Analysis for Dimensionality Reduction:**
+
+```{r}
+# Performing PCA while scaling the dataset
+pca <- prcomp(filtered_df, scale. = TRUE , center = TRUE)
+summary(pca)
+```
+
+```{r}
+# Analyzing the structure of PCA
+str(pca)
+```
+
+**Plotting Explained and Cumulative Variance for Each Principal Component:** 
+
+```{r}
+pca.var <- pca$sdev^2
+pve <- pca.var / sum(pca.var)
+
+# Plotting variance explained for each principal component
+plot(pve, 
+     xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     ylim = c(0,1), 
+     type = "b")
+
+plot(cumsum(pve), xlab = "Principal Component",
+     ylab = "Cumulative Proportion of Variance Explained",
+     ylim = c(0, 1), type = "b")
+```
+
+**Appending and Visualizing Results from PCA:**
+
+```{r}
+# Sub-setting PC's at 80% explained variation threshold:
+pca_df <- as.data.frame(pca$x[, 1:36])
+
+# Plotting interaction between top 2 principal components:
+pca_x <- pca_df[,1]
+pca_y <- pca_df[,2]
+class <- initial_data$Class
+
+pca_xyc <- as.data.frame( cbind(pca_x,pca_y,class) )
+
+pca_plot <- ggplot(pca_xyc, aes(x = pca_x, y = pca_y, color = factor(class))) + 
+            geom_point() + 
+            ggtitle("PCA with Classes") + 
+            xlab("PC1") + ylab("PC2") +
+            coord_fixed(ratio = 1) + 
+            theme_bw() + 
+            theme(aspect.ratio = 1) + 
+            theme(panel.grid = element_blank())
+
+pca_plot
+```
+
+**Appending and Storing Results in Dataframe:**
+
+```{r}
+# Creating dataframe for future usability
+Class <- initial_data$Class
+
+final_df <- cbind(filtered_df,pca_df,Class) # Dataframe containing all feature columns, top 50 principal component columns and class label column
+
+pca_df_w_class <- cbind(pca_df,Class) # Dataframe containing top 36 principal component columns and class label column
+
+filtered_df_w_class <- cbind(filtered_df,Class) # Dataframe containing all feature columns and class label column
+```
+
+```{r}
+# Breakup of class label column in the PCA reduced dataframe
+table(pca_df_w_class[37])
+```
+
+**PCA - for Dimensionality Reduction vs Supervised Algorithms:**
+
+Given the nature of our dataset, with a limited number of observations and large dimensions PCA over LDA or any supervised learning technique for dimensionality reduction suits us for following reasons:
+
+1) Compatibility with Clustering
+2) Compatibility with Classification
+3) Interpretability
+4) Efficiency
+5) Feature Engineering
+
+Overall, PCA offers a versatile and effective approach to dimensionality reduction that is well-suited for both clustering and classification tasks. It provides a balance between preserving important information in the data and reducing its dimensionality, making it a valuable technique in various data analysis scenarios such as our given the nature of our dataset.
+
+#### [PART 2: Unsupervised Learning:]{style="color:navy; font-weight:bold;"}
+
+**II) Use unsupervised learning models/clustering to investigate clusters/groups of genes and clusters/groups of patients. Apply Principal Component Analysis, k-means clustering and hierarchical clustering. You may add one further method.**
+
+**Principal Component Analysis - Creating a Model:**
+
+```{r}
+# Performing PCA on the cleaned and imputed dataset, excluding the last column
+pcaResult <- prcomp(filtered_df_w_class[,-ncol(filtered_df_w_class)], center = TRUE, scale. = TRUE)
+summary(pcaResult)
+```
+
+**Visualizing Points Across Top 2 Principal Components:** 
+
+```{r}
+# Plot PCA, coloring by the class variable that shows clusters 
+plot(pcaResult$x[,1:2], col = as.factor(filtered_df_w_class[,ncol(filtered_df_w_class)]))
+title("PCA of Gene Expression Data")
+```
+
+**Features Before and After Performing PCA:**
+
+```{r}
+# Before PCA: Count the number of original variables (excluding the class variable)
+num_original_variables <- ncol(filtered_df_w_class) - 1
+print(paste("Number of original variables:", num_original_variables))
+
+# After PCA: Determine the number of principal components based on a variance threshold
+explained_variance <- summary(pcaResult)$importance[2,]
+cumulative_explained_variance <- cumsum(explained_variance)
+variance_threshold <- 0.80 # for example, 80% of the variance
+num_components_needed <- which(cumulative_explained_variance >= variance_threshold)[1]
+print(paste("Number of components needed to explain at least", variance_threshold * 100, "% of the variance:", num_components_needed))
+
+```
+**Plotting Explained Variance by Each Component:**
+
+```{r}
+# Optionally, plot a scree plot to visually inspect the variance explained by each component
+plot(explained_variance, type = "b", xlab = "Principal Component", ylab = "Proportion of Variance Explained", main = "Scree Plot")
+abline(h = variance_threshold, col = "red", lty = 2) # Add a horizontal line at the variance threshold
+```
+
+**Agglomerative Clustering - Creating the Model:**
+
+```{r}
+# Exclude the class/label column from the clustering input
+DataForClustering <- pca_df_w_class[, !names(pca_df_w_class) %in% c('Class')]
+
+# Calculate distance matrix using Euclidean distance
+d <- dist(DataForClustering, method = "euclidean")
+
+# Perform agglomerative clustering using Ward's method
+hc <- hclust(d, method = "ward.D2")
+
+# Increasing plot margins to ensure clarity
+par(mar=c(5,4,4,8) + 0.1)  # Adjust the margins (bottom, left, top, right)
+
+```
+
+**Plotting the Clusters:**
+
+```{r}
+# Plot the dendrogram with enhanced clarity
+plot(hc, labels=FALSE, cex=0.6)  # Adjust cex for label size if labels are used
+
+# Choose the number of clusters k based on your analysis or requirement
+k <- 2
+rect.hclust(hc, k=k, border="red")  # Add colored rectangles around clusters
+
+```
+**Exporting Dendogram as PDF:**
+
+```{r}
+# Exporting the dendrogram to a PDF for high-quality output
+pdf("dendrogram.pdf", width=10, height=8)
+plot(hc, labels=FALSE)
+rect.hclust(hc, k=k, border="red")  # Optionally, add colored rectangles again for the PDF output
+dev.off()  # Close the PDF device
+```
+
+**K-Means Clustering - Creating the Model:**
+
+```{r}
+# Specify the number of clusters
+k <- 3 
+
+# Perform k-means clustering
+kmeans_result <- kmeans(pcaResult$x[, 1:2], centers = k)
+```
+
+```{r}
+# Convert the first 2 principal components to a data frame
+kmeans_df_pca <- as.data.frame(pcaResult$x[, 1:2]) 
+
+# Add k-means as a new factor column in the PCA data frame
+kmeans_df_pca$cluster <- as.factor(kmeans_result$cluster) 
+```
+
+```{r}
+# Plot using ggplot2
+kmeans_plot <- ggplot(kmeans_df_pca, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point(alpha = 1) +  theme_linedraw() + labs(title = "K-means Clustering on PCA Results",
+      x = "Principal Component 1",
+       y = "Principal Component 2") +
+  scale_color_discrete(name = "Cluster")
+
+kmeans_plot
+
+# Save plot
+ggsave("k-means.png", plot = kmeans_plot, width = 10, height = 8, units = "in")
+```
+
+
+**Hierarchical Clustering - Creating the Model:**
+
+```{r}
+# Create another data frame with first 2 principal components
+df_hclust <- data.frame(PC1 = pcaResult$x[, 1], PC2 = pcaResult$x[, 2])
+
+# Compute the distance matrix
+dist_matrix <- dist(df_hclust, method = "euclidean")
+
+# Perform hierarchical clustering
+hc_result <- hclust(dist_matrix, method = "ward.D2")
+
+# Plot the dendrogram
+plot(hc_result)
+```
+
+```{r}
+# Specify the number of clusters
+k <- 3
+
+# Cut the dendrogram tree into 'k' clusters
+clusters <- cutree(hc_result, k = k)
+
+# Add the cluster assignments as a new factor column
+df_hclust$cluster <- as.factor(clusters)
+```
+
+```{r}
+# Plot using ggplot2
+ggplot(df_hclust, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Hierarchical Clustering on PCA Results",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  scale_color_discrete(name = "Cluster")
+```
+
+**T-SNE Clustering - Creating the Model:**
+
+```{r}
+tsne_result <- Rtsne(pca_df_w_class, dims = 2, perplexity = 10, verbose = TRUE)
+tsne_df <- as.data.frame(tsne_result$Y)
+
+ggplot(tsne_df, aes(x = V1, y = V2, color = as.factor(pca_df_w_class$Class))) +
+  geom_point() +
+  labs(title = "t-SNE Visualization with Color") +
+  scale_color_discrete(name = "Class")
+```
+
+#### [PART 3: Supervised Learning:]{style="color:navy; font-weight:bold;"}
+
+**III) Use supervised learning models/classification to predict the class (invasive or non invasive) of future patients. Apply Logistic Regression, LDA, QDA, k-NN, Random Forest and SVM. Discuss why you choose specific hyper parameters of a supervised learning model. You may add one or two further methods to the investigation. Use resampling techniques to compare the machine learning models applied. Suggest and justify your ‘best’ machine learning model.**
+
+**Preparing Dataset:**
+
+```{r}
+# Loading dataset
+df <- pca_df_w_class
+
+# Converting class label to factor with two levels
+df$Class <- factor(df$Class)
+
+str(df)
+
+# Checking class distribution
+class_distribution <- table(df$Class)
+class_distribution
+
+# Setting Seed for reproducibility
+registration_number <- 2315740 #Mantosh
+set.seed(registration_number)
+
+# Splitting into train & test sets
+train_index <- sample(1:nrow(df), 0.80 * nrow(df))
+train_data <- df[train_index, ]
+test_data <- df[-train_index, ]
+
+class_distribution_train <- table(train_data$Class)
+class_distribution_train
+class_distribution_test <- table(test_data$Class)
+class_distribution_test
+```
+
+**Creating and Tuning Logistic Regression Model:**
+
+```{r}
+# Define control parameters for model
+lr_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross-validation
+
+# Creating Logistic Regression model
+lr <- train(Class ~ ., data = train_data, method = "glmnet", trControl = lr_ctrl)
+lr_best_model <- lr
+
+# Print cross-validation results
+print(lr_best_model$results)
+
+# Plotting accuracy vs. hyperparameters
+plot(lr_best_model)
+
+# Selecting the best model (not required for logistic regression)
+# Logistic regression does not require selecting the best model
+
+# Making predictions of Logistic Regression model
+lr_predictions <- predict(lr_best_model, newdata = test_data)
+
+# Evaluating the Logistic Regression model
+lr_confusion_matrix <- table(Actual = test_data$Class, Predicted = lr_predictions)
+lr_confusion_matrix
+
+# Accuracy calculation of Logistic Regression model
+lr_accuracy <- sum(diag(lr_confusion_matrix)) / sum(lr_confusion_matrix)
+lr_accuracy
+```
+
+**Creating and Tuning Linear Discriminant (LDA) Model:**
+
+```{r}
+# Defining control parameters for model
+lda_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross validation
+
+# Training LDA model
+lda <- train(Class ~ ., data = train_data, method = "lda" ,
+             trControl = lda_ctrl)
+lda_best_model <- lda
+
+
+# Printing cross-validation results
+print(lda$results)
+
+#Making predictions of LDA model
+lda_predictions <- predict(lda_best_model, newdata = test_data)
+
+# Evaluating the model
+lda_confusion_matrix <- table(Actual = test_data$Class, Predicted = lda_predictions)
+lda_confusion_matrix
+
+# Accuracy calculation
+lda_accuracy <- sum(diag(lda_confusion_matrix)) / sum(lda_confusion_matrix)
+lda_accuracy
+```
+
+**CREATING AND TUNING NAIVE BAYES MODEL FOR BEST RESULT:**
+
+```{r}
+# Defining control parameters for model
+nb_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross validation
+
+# Training Naive Bayes model
+nb <- train(Class ~ ., data = train_data, method = "naive_bayes",          
+            trControl = nb_ctrl)
+nb_best_model <- nb
+
+# Printing cross-validation results
+print(nb_best_model$results)
+
+# Plotting accuracy
+plot(nb_best_model)
+
+# Making predictions of Naive Bayes model
+nb_predictions <- predict(nb_best_model, newdata = test_data)
+
+# Evaluating the model
+nb_confusion_matrix <- table(Actual = test_data$Class, Predicted = nb_predictions)
+nb_confusion_matrix
+
+# Accuracy calculation
+nb_accuracy <- sum(diag(nb_confusion_matrix)) / sum(nb_confusion_matrix)
+nb_accuracy
+```
+
+**CREATING AND TUNING K NEAREST NEIGHBORS MODEL FOR BEST RESULT:**
+
+```{r}
+# Defining control parameters for model
+knn_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross validation
+
+# Training KNN model with grid search for hyper-parameter tuning
+k_values <- c(1, 2, 3, 4, 5 , 6, 7, 8, 9 , 10, 11, 12, 13 , 14 , 15, 20)
+knn <- train(Class ~ ., data = train_data, method = "knn",
+             trControl = knn_ctrl,
+             tuneGrid = expand.grid(k = k_values))
+
+# Printing cross-validation results
+print(knn$results)
+
+# Plotting accuracy vs. k
+plot(knn)
+
+# Selecting the best model
+best_k <- knn$bestTune$k
+knn_best_model <- train(Class ~ ., data = train_data, method = "knn", 
+                  trControl = knn_ctrl, 
+                  tuneGrid = data.frame(k = best_k))
+knn_best_model
+
+#Making predictions of knn Model
+knn_predictions <- predict(knn_best_model, newdata = test_data)
+
+# Evaluating the model
+knn_confusion_matrix <- table(Actual = test_data$Class, Predicted = knn_predictions)
+knn_confusion_matrix
+
+# Accuracy calculation
+knn_accuracy <- sum(diag(knn_confusion_matrix)) / sum(knn_confusion_matrix)
+knn_accuracy
+```
+
+**CREATING AND TUNING SVM MODEL FOR BEST RESULT:**
+
+```{r}
+# Defining control parameters for model
+svm_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross validation
+
+# Training SVM model
+svm_grid <- expand.grid(sigma = runif(10, 0.1, 2), C = 10^runif(10, -2, 2))
+svm <- train(Class ~ .,data = train_data, method = "svmRadial",          
+                  trControl = svm_ctrl,     
+                  tuneGrid = svm_grid)
+
+# Printing cross-validation results
+print(svm$results)
+
+# Plotting accuracy vs cost/sigma
+plot(svm)
+
+# Extracting the best model
+best_sigma <- svm$bestTune$sigma
+best_C <- svm$bestTune$C
+
+svm_best_model <- train(Class ~ .,  data = train_data, method = "svmRadial", 
+                        trControl = svm_ctrl, 
+                        tuneGrid = data.frame(sigma = best_sigma, C = best_C))
+
+#Making predictions of SVM MODEL
+svm_predictions <- predict(svm_best_model, newdata = test_data)
+
+# Evaluating the SVM MODEL
+svm_confusion_matrix <- table(Actual = test_data$Class, Predicted = svm_predictions)
+svm_confusion_matrix
+
+# Accuracy calculation
+svm_accuracy <- sum(diag(svm_confusion_matrix)) / sum(svm_confusion_matrix)
+svm_accuracy
+```
+
+**CREATING AND TUNING RANDOM FOREST MODEL FOR BEST RESULT:**
+
+```{r}
+# Creating a sample decision tree
+tree <- rpart(Class ~. , method = "class" , control = rpart.control(cp = 0 , minsplit = 1) , data = df)
+plot(tree, uniform = TRUE)
+text(tree, use.n = TRUE)
+
+# Defining control parameters for model
+
+# Using bootstrapping for cross validation by taking 500 samples
+# mtry = number of features to include in creating random forests
+# ntree = number of trees
+
+rf_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross validation
+
+# Training Random Forest model with grid search for hyper-parameter tuning
+rf_tune_grid <- expand.grid(mtry = seq(1, ncol(train_data) - 1))
+
+rf <- train(Class ~ ., data = train_data, method = "rf", ntree = 500,
+            trControl = rf_ctrl,
+            tuneGrid = rf_tune_grid)
+
+# Printing cross-validation results
+print(rf$results)
+
+# Plotting accuracy vs. mtry
+plot(rf)
+
+# Selecting the best model
+best_mtry <- rf$bestTune$mtry
+rf_best_model <- train(Class ~ ., data = train_data, method = "rf", 
+                       trControl = rf_ctrl, 
+                       tuneGrid = data.frame(mtry = best_mtry))
+rf_best_model
+
+#Making predictions
+rf_predictions <- predict(rf_best_model, newdata = test_data)
+
+# Evaluating the model
+rf_confusion_matrix <- table(Actual = test_data$Class, Predicted = rf_predictions)
+rf_confusion_matrix
+
+# Accuracy calculation
+rf_accuracy <- sum(diag(rf_confusion_matrix)) / sum(rf_confusion_matrix)
+rf_accuracy
+```
+
+**CREATING AND TUNING XG BOOST MODEL FOR BEST RESULT:**
+
+```{r}
+# Defining control parameters for model
+xgb_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross validation
+
+# Training XGBoost model with hyperparameters
+xgb <- train(Class ~ ., data = train_data, method = "xgbTree", 
+             trControl = xgb_ctrl,
+             tuneLength = 3)  # Tune over a limited number of parameter combinations
+
+# Printing cross-validation results
+print(xgb$results)
+
+# Plotting accuracy vs. hyperparameters
+plot(xgb)
+
+# Making predictions
+xgb_predictions <- predict(xgb, newdata = test_data)
+
+# Evaluating the model
+xgb_confusion_matrix <- table(Actual = test_data$Class, Predicted = xgb_predictions)
+xgb_confusion_matrix
+
+# Accuracy calculation
+xgb_accuracy <- sum(diag(xgb_confusion_matrix)) / sum(xgb_confusion_matrix)
+xgb_accuracy
+
+```
+
+**Resampling & Evaluating All Models Agaisnt Accuracy:**
+
+```{r}
+# Create a list of trained models
+models <- list(
+  Logistic_Regression = lr_best_model,
+  LDA = lda_best_model,
+  Naive_Bayes = nb_best_model,
+  KNN = knn_best_model,
+  SVM = svm_best_model,
+  Random_Forest = rf_best_model,
+  XB_Boost = xgb
+  )
+
+# Evaluate models on multiple datasets
+model_eval <- resamples(models, data = datasets, method = "accuracy")
+
+# Summarize results
+summary(model_eval)
+
+# Visualize results
+bwplot(model_eval)
+```
+
+**Evaluating All Models:**
+
+```{r}
+model_predictions <- lapply(models, function(model) {
+  predict(model, newdata = test_data)
+})
+
+# Evaluate performance metrics (e.g., accuracy, precision, recall) on the testing dataset for each model
+model_metrics <- lapply(model_predictions, function(predictions) {
+  confusionMatrix(predictions, test_data$Class)
+})
+
+# Model metrics
+model_metrics
+
+# Model Accuracy on test dataset
+model_accuracy_test_dataset <- sapply(model_metrics, function(metrics) {
+  metrics$overall["Accuracy"]
+})
+
+# Compare performance metrics of models 
+model_accuracy_test_dataset
+
+# Get the name of the best model based on accuracy
+best_model_name <- names(model_accuracy_test_dataset[model_accuracy_test_dataset == max(model_accuracy_test_dataset)])
+
+# Print the best model based on accuracy
+print("Best model based on accuracy:")
+print(best_model_name)
+```
+
+#### [PART 4: Investigating Best Machine Learning Model:]{style="color:navy; font-weight:bold;"}
+
+**IV) Investigate if clusters established under II) improve your ‘best’ machine learning model.**  
+
+```{r}
+# Setting seed for reproducibility
+set.seed(2315740) 
+
+# Converting class label to factor with two levels
+df2 <- filtered_df_w_class
+df2$Class <- factor(df2$Class)
+
+# Splitting dataset into test and train
+raw_train_index <- sample(1:nrow(df2), 0.80 * nrow(df2))
+raw_train_data <- df2[raw_train_index, ]
+raw_test_data <- df2[-raw_train_index, ]
+```
+
+**Testing KNN Model on Raw Dataset (Non-Dimensionally Reduced):**
+
+```{r}
+# Defining control parameters for model
+raw_knn_ctrl <- trainControl(method = "cv", number = 3)  # 3-fold cross validation
+
+# Training KNN model with grid search for hyper-parameter tuning
+raw_k_values <- c(1, 2, 3, 4, 5 , 6, 7, 8, 9 , 10, 11, 12, 13 , 14 , 15, 20)
+raw_knn <- train(Class ~ ., data = raw_train_data, method = "knn",
+             trControl = raw_knn_ctrl,
+             tuneGrid = expand.grid(k = raw_k_values))
+
+# Printing cross-validation results
+print(raw_knn$results)
+
+# Plotting accuracy vs. k
+plot(raw_knn)
+
+# Selecting the best model
+raw_best_k <- raw_knn$bestTune$k
+raw_knn_best_model <- train(Class ~ ., data = raw_train_data, method = "knn", 
+                  trControl = raw_knn_ctrl, 
+                  tuneGrid = data.frame(k = raw_best_k))
+raw_knn_best_model
+
+#Making predictions of knn Model
+raw_knn_predictions <- predict(raw_knn_best_model, newdata = raw_test_data)
+
+# Evaluating the model
+raw_knn_confusion_matrix <- table(Actual = raw_test_data$Class, Predicted = raw_knn_predictions)
+raw_knn_confusion_matrix
+
+# Accuracy calculation
+raw_knn_accuracy <- sum(diag(raw_knn_confusion_matrix)) / sum(raw_knn_confusion_matrix)
+raw_knn_accuracy
+```
+
+**Comparing Results of Best KNN Model on Dimensioanlly Reduced vs Raw Dataset:**
+
+```{r}
+# Calculating precision, recall, and F1-score for KNN model trained on the raw dataset
+raw_knn_conf_mat <- raw_knn_confusion_matrix
+raw_knn_precision <- raw_knn_conf_mat[2, 2] / sum(raw_knn_conf_mat[, 2])
+raw_knn_recall <- raw_knn_conf_mat[2, 2] / sum(raw_knn_conf_mat[2, ])
+raw_knn_f1_score <- 2 * (raw_knn_precision * raw_knn_recall) / (raw_knn_precision + raw_knn_recall)
+
+cat("KNN Model on Raw Dataset:\n")
+cat("Accuracy:", raw_knn_accuracy, "\n")
+cat("Precision:", raw_knn_precision, "\n")
+cat("Recall:", raw_knn_recall, "\n")
+cat("F1-score:", raw_knn_f1_score, "\n")
+```
+
+```{r}
+# Calculating precision, recall, and F1-score for KNN model trained on the dimensionally reduced dataset
+knn_conf_mat <- knn_confusion_matrix
+knn_precision <- knn_conf_mat[2, 2] / sum(knn_conf_mat[, 2])
+knn_recall <- knn_conf_mat[2, 2] / sum(knn_conf_mat[2, ])
+knn_f1_score <- 2 * (knn_precision * knn_recall) / (knn_precision + knn_recall)
+
+cat("KNN Model on Dimensioanlly Reduced Dataset:\n")
+cat("Accuracy:", knn_accuracy, "\n")
+cat("Precision:", knn_precision, "\n")
+cat("Recall:", knn_recall, "\n")
+cat("F1-score:", knn_f1_score, "\n")
+```
+
+**Plotting and Checking ROC/AUC for Both Models:**
+
+```{r}
+# Plotting ROC curves for both models
+
+# Calculating predicted probabilities for both models
+raw_knn_pred_probs <- predict(raw_knn_best_model, newdata = raw_test_data, type = "prob")[, "1"]
+knn_pred_probs <- predict(knn_best_model, newdata = test_data, type = "prob")[, "1"]
+
+# Plotting ROC curves
+raw_roc_knn <- roc(raw_test_data$Class, raw_knn_pred_probs)
+roc_knn <- roc(test_data$Class, knn_pred_probs)
+
+plot(raw_roc_knn, col = "blue", main = "ROC Curves for KNN Models")
+plot(roc_knn, col = "red", add = TRUE)
+legend("bottomright", legend = c("Dimensionally Reduced Dataset", "Raw Dataset"), col = c("red", "blue"), lty = 1)
+
+```
+
+
+```{r}
+# Calculating AUC for both models
+raw_auc_knn <- auc(raw_roc_knn)
+auc_knn <- auc(roc_knn)
+
+cat("\nKNN Model AUC on Raw Dataset:", raw_auc_knn, "\n")
+cat("KNN Model AUC on Dimensionally Reduced Dataset:", auc_knn, "\n")
+```
