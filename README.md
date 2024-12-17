@@ -8,4 +8,3 @@ This project leverages gene expression data to explore the differences between i
 - Further, different unsupervised and supervised machine learning models were used to examine the differences between invasive and noninvasive cancer samples for classification.   
 - Findings aim to contribute to the understanding of cancer biology and aid in the identification of gene signatures that differentiate invasive from noninvasive cancer types,
   potentially guiding future diagnostic and therapeutic strategies.
-
